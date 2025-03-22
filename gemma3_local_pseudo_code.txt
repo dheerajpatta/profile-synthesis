@@ -1,0 +1,93 @@
+#======================================================================
+# COMPREHENSIVE LOCAL GEMMA 3 MODEL SETUP WITH OLLAMA
+#======================================================================
+
+FUNCTION SetupLocalGemmaModel(model_size, task_type, available_hardware):
+    # Input parameters:
+    # - model_size: Size of model to use (e.g., "3B", "7B", "12B", "27B")
+    # - task_type: Primary task ("text_generation", "code_assist", etc.)
+    # - available_hardware: Hardware specs (RAM, GPU type/VRAM, etc.)
+    
+	#----------------------------------------------------------------------
+    # 1. Model Selection
+    #----------------------------------------------------------------------
+
+    FUNCTION SelectAppropriateModel(model_size, task_type):
+        IF task_type == "text_generation":
+            model_name = "gemma-" + model_size
+        ELSE IF task_type == "code_assist":
+            model_name = "gemma-coder-" + model_size
+        ELSE:
+            THROW Error("Unsupported task type: " + task_type)
+        
+        RETURN model_name
+    #----------------------------------------------------------------------
+    # 2. Assess Hardware Requirements
+    #----------------------------------------------------------------------
+
+    FUNCTION AssessHardwareRequirements(available_hardware, model_size):
+        approximate_vram_required = {
+            "3B": 8, "7B": 16, "12B": 32, "27B": 64  # Adjust based on Gemma 3 specs
+        }
+        approximate_ram_required = {
+            "3B": 16, "7B": 32, "12B": 64, "27B": 128
+        }
+        
+        gpu_suitable = available_hardware.gpu_available AND available_hardware.gpu_vram >= approximate_vram_required[model_size]
+        cpu_suitable = available_hardware.ram >= approximate_ram_required[model_size]
+        
+        recommended_mode = "gpu" IF gpu_suitable ELSE "cpu" IF cpu_suitable ELSE "requires_quantization"
+        
+        RETURN { "recommended_mode": recommended_mode }
+		
+    #----------------------------------------------------------------------
+    # 3. Generate Ollama Modelfile
+    #----------------------------------------------------------------------
+    
+	FUNCTION GenerateOllamaModelfile(model_name, quantization_config, context_length, inference_params):
+        modelfile_content = "FROM " + model_name + "\n\n"
+        
+        modelfile_content += "PARAMETER temperature " + inference_params.temperature + "\n"
+        modelfile_content += "PARAMETER top_p " + inference_params.top_p + "\n"
+        modelfile_content += "PARAMETER top_k " + inference_params.top_k + "\n"
+        modelfile_content += "PARAMETER num_ctx " + context_length + "\n"
+        
+        IF quantization_config IS NOT NULL:
+            modelfile_content += "PARAMETER quantization " + quantization_config.quant_method + "\n"
+        
+        modelfile_path = SaveToFile("Modelfile_" + model_name, modelfile_content)
+        RETURN modelfile_path
+ 
+	#----------------------------------------------------------------------
+    # 4. Configure API Endpoint
+    #----------------------------------------------------------------------
+
+    FUNCTION ConfigureApiEndpoint(custom_model_name):
+        ExecuteCommand("ollama serve &")
+        Sleep(2)  # Wait for the server
+        
+        api_info = {
+            "endpoint": "http://localhost:11434/api/generate",
+            "example_python": "import requests\n" +
+                "response = requests.post('http://localhost:11434/api/generate',\n" +
+                "    json={'model': '" + custom_model_name + "', 'prompt': 'Explain AI.', 'stream': False}\n" +
+                ")\nprint(response.json()['response'])"
+        }
+        
+        RETURN api_info
+
+   #----------------------------------------------------------------------
+   # 5. Main Execution Flow
+   #----------------------------------------------------------------------
+
+    model_name = SelectAppropriateModel(model_size, task_type)
+    hardware_assessment = AssessHardwareRequirements(available_hardware, model_size)
+    quantization_config = NULL IF hardware_assessment.recommended_mode == "gpu" ELSE { "quant_method": "int4" }
+    context_length = 128000 IF model_size == "27B" ELSE 4096  # Adjusted based on Gemma 3 context capabilities
+    inference_params = { "temperature": 0.7, "top_p": 0.9, "top_k": 50 }
+    
+    modelfile_path = GenerateOllamaModelfile(model_name, quantization_config, context_length, inference_params)
+    ExecuteCommand("ollama create " + model_name + " -f " + modelfile_path)
+    
+    api_info = ConfigureApiEndpoint(model_name)
+    RETURN { "model_name": model_name, "api_info": api_info }
